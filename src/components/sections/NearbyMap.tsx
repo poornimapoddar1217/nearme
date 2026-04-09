@@ -1,16 +1,15 @@
 "use client";
 
-import "leaflet/dist/leaflet.css";
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
-  Circle,
-  MapContainer,
+  APIProvider,
+  AdvancedMarker,
+  InfoWindow,
+  Map,
   Marker,
-  Popup,
-  TileLayer,
+  Pin,
   useMap,
-} from "react-leaflet";
-import L from "leaflet";
+} from "@vis.gl/react-google-maps";
 import type { Place, UserLocation } from "@/types/place";
 import { formatDistance } from "@/lib/distance";
 
@@ -22,41 +21,39 @@ type NearbyMapProps = {
   onSelectPlace: (placeId: string) => void;
 };
 
-function MapViewUpdater({ center, radiusMeters }: { center: UserLocation; radiusMeters: number }) {
-  const map = useMap();
-  const zoom = radiusMeters <= 1000 ? 15 : radiusMeters <= 3000 ? 14 : 13;
-  map.setView([center.lat, center.lng], zoom);
-  return null;
+function zoomForRadius(radiusMeters: number): number {
+  if (radiusMeters <= 1000) return 15;
+  if (radiusMeters <= 5000) return 14;
+  if (radiusMeters <= 15000) return 13;
+  if (radiusMeters <= 30000) return 12;
+  return 11;
 }
 
-function FocusSelectedMarker({
-  places,
-  selectedPlaceId,
+function RadiusCircle({
+  center,
+  radiusMeters,
 }: {
-  places: Place[];
-  selectedPlaceId: string | null;
+  center: UserLocation;
+  radiusMeters: number;
 }) {
   const map = useMap();
-  useEffect(() => {
-    if (!selectedPlaceId) return;
-    const selected = places.find((item) => item.id === selectedPlaceId);
-    if (!selected) return;
 
-    map.flyTo([selected.lat, selected.lon], Math.max(map.getZoom(), 16), {
-      duration: 0.6,
+  useEffect(() => {
+    if (!map) return;
+    const circle = new google.maps.Circle({
+      map,
+      center: { lat: center.lat, lng: center.lng },
+      radius: radiusMeters,
+      strokeColor: "#ff3b3b",
+      strokeOpacity: 0.9,
+      strokeWeight: 2,
+      fillColor: "#ff3b3b",
+      fillOpacity: 0.12,
     });
-  }, [map, places, selectedPlaceId]);
+    return () => circle.setMap(null);
+  }, [center.lat, center.lng, map, radiusMeters]);
 
   return null;
-}
-
-function createMarkerIcon(className: string): L.DivIcon {
-  return L.divIcon({
-    className,
-    html: "<span></span>",
-    iconSize: [22, 22],
-    iconAnchor: [11, 11],
-  });
 }
 
 export default function NearbyMap({
@@ -66,58 +63,111 @@ export default function NearbyMap({
   selectedPlaceId,
   onSelectPlace,
 }: NearbyMapProps) {
-  const userIcon = useMemo(() => createMarkerIcon("map-user-marker"), []);
-  const redPlaceIcon = useMemo(() => createMarkerIcon("map-place-marker"), []);
+  const apiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY ?? "";
+  const mapId = process.env.NEXT_PUBLIC_GOOGLE_MAPS_MAP_ID;
+  const useAdvancedMarkers = Boolean(mapId);
+  const [openInfoId, setOpenInfoId] = useState<string | null>(null);
+
+  const selectedPlace = useMemo(
+    () => places.find((item) => item.id === selectedPlaceId) ?? null,
+    [places, selectedPlaceId]
+  );
+  const mapCenter = selectedPlace
+    ? { lat: selectedPlace.lat, lng: selectedPlace.lon }
+    : { lat: center.lat, lng: center.lng };
+  const zoom = zoomForRadius(radiusMeters);
+
+  if (!apiKey) {
+    return <div className="map-root">Missing map API key.</div>;
+  }
 
   return (
-    <MapContainer center={[center.lat, center.lng]} zoom={15} className="map-root" zoomControl>
-      <TileLayer
-        attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
-        url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-      />
+    <APIProvider apiKey={apiKey}>
+      <Map
+        className="map-root"
+        center={mapCenter}
+        zoom={zoom}
+        mapId={mapId}
+        gestureHandling="greedy"
+        disableDefaultUI={false}
+      >
+        <RadiusCircle center={center} radiusMeters={radiusMeters} />
 
-      <MapViewUpdater center={center} radiusMeters={radiusMeters} />
-      <FocusSelectedMarker places={places} selectedPlaceId={selectedPlaceId} />
+        {useAdvancedMarkers ? (
+          <AdvancedMarker position={{ lat: center.lat, lng: center.lng }}>
+            <Pin
+              background="#3b82f6"
+              borderColor="#ffffff"
+              glyphColor="#ffffff"
+              scale={1.05}
+            />
+          </AdvancedMarker>
+        ) : (
+          <Marker position={{ lat: center.lat, lng: center.lng }} />
+        )}
 
-      <Circle
-        center={[center.lat, center.lng]}
-        radius={radiusMeters}
-        pathOptions={{ color: "var(--color-accent)", fillOpacity: 0.08, weight: 1.5 }}
-      />
+        {places.map((place) => {
+          const isSelected = selectedPlaceId === place.id;
 
-      <Marker position={[center.lat, center.lng]} icon={userIcon}>
-        <Popup>You are here</Popup>
-      </Marker>
+          if (useAdvancedMarkers) {
+            return (
+              <AdvancedMarker
+                key={place.id}
+                position={{ lat: place.lat, lng: place.lon }}
+                onClick={() => {
+                  onSelectPlace(place.id);
+                  setOpenInfoId(place.id);
+                }}
+              >
+                <Pin
+                  background="#ff3b3b"
+                  borderColor="#ffffff"
+                  glyphColor="#ffffff"
+                  scale={isSelected ? 1.2 : 1}
+                />
+              </AdvancedMarker>
+            );
+          }
 
-      {places.map((place) => {
-        const isSelected = selectedPlaceId === place.id;
-        const markerIcon = isSelected
-          ? createMarkerIcon("map-place-marker selected")
-          : redPlaceIcon;
+          return (
+            <Marker
+              key={place.id}
+              position={{ lat: place.lat, lng: place.lon }}
+              onClick={() => {
+                onSelectPlace(place.id);
+                setOpenInfoId(place.id);
+              }}
+            />
+          );
+        })}
 
-        return (
-          <Marker
-            key={place.id}
-            position={[place.lat, place.lon]}
-            icon={markerIcon}
-            eventHandlers={{ click: () => onSelectPlace(place.id) }}
-          >
-            <Popup>
-              <strong>{place.name}</strong>
-              <br />
-              {place.address}
-              <br />
-              {formatDistance(place.distanceMeters)} away
-              {typeof place.rating === "number" ? (
-                <>
-                  <br />
-                  Rating: {place.rating.toFixed(1)}
-                </>
-              ) : null}
-            </Popup>
-          </Marker>
-        );
-      })}
-    </MapContainer>
+        {openInfoId
+          ? (() => {
+              const place = places.find((item) => item.id === openInfoId);
+              if (!place) return null;
+              return (
+                <InfoWindow
+                  position={{ lat: place.lat, lng: place.lon }}
+                  onCloseClick={() => setOpenInfoId(null)}
+                >
+                  <div>
+                    <strong>{place.name}</strong>
+                    <br />
+                    {place.address}
+                    <br />
+                    {formatDistance(place.distanceMeters)} away
+                    {typeof place.rating === "number" ? (
+                      <>
+                        <br />
+                        Rating: {place.rating.toFixed(1)}
+                      </>
+                    ) : null}
+                  </div>
+                </InfoWindow>
+              );
+            })()
+          : null}
+      </Map>
+    </APIProvider>
   );
 }

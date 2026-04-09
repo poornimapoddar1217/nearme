@@ -1,8 +1,8 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { FormEvent, useMemo, useState } from "react";
-import { formatDistance, haversineDistanceMeters } from "@/lib/distance";
+import { FormEvent, useEffect, useMemo, useState } from "react";
+import { formatDistance } from "@/lib/distance";
 import type { Place, UserLocation } from "@/types/place";
 
 const NearbyMap = dynamic(() => import("@/components/sections/NearbyMap"), {
@@ -11,42 +11,65 @@ const NearbyMap = dynamic(() => import("@/components/sections/NearbyMap"), {
 
 const DEFAULT_RADIUS_METERS = 5000;
 const RADIUS_OPTIONS = [5000, 10000, 15000, 20000, 30000] as const;
-const AUTO_EXPAND_BASE_STEPS = [5000, 10000, 20000, 30000];
-
-function mapGooglePlaceToPlace(
-  item: google.maps.places.PlaceResult,
-  userLocation: UserLocation
-): Place | null {
-  const lat = item.geometry?.location?.lat();
-  const lon = item.geometry?.location?.lng();
-
-  if (typeof lat !== "number" || typeof lon !== "number") return null;
-
-  return {
-    id: item.place_id ?? `${lat}-${lon}`,
-    name: item.name?.trim() || "Unnamed place",
-    address: item.vicinity?.trim() || item.formatted_address?.trim() || "Address unavailable",
-    lat,
-    lon,
-    distanceMeters: haversineDistanceMeters(userLocation.lat, userLocation.lng, lat, lon),
-    rating: typeof item.rating === "number" ? item.rating : undefined,
-  };
-}
+const EXPAND_STEPS_METERS = [10000, 20000, 30000, 50000, 80000, 120000, 180000, 250000];
 
 export default function NearbySearchSection() {
-  const [query, setQuery] = useState("salon");
+  const [query, setQuery] = useState("");
+  const [fromLocationText, setFromLocationText] = useState("");
+  const [suggestions, setSuggestions] = useState<Array<{ id: string; label: string }>>([]);
+  const [showSuggestions, setShowSuggestions] = useState(false);
   const [radiusMeters, setRadiusMeters] = useState<number>(DEFAULT_RADIUS_METERS);
   const [customRadiusKm, setCustomRadiusKm] = useState<string>("5");
   const [userLocation, setUserLocation] = useState<UserLocation | null>(null);
   const [places, setPlaces] = useState<Place[]>([]);
   const [selectedPlaceId, setSelectedPlaceId] = useState<string | null>(null);
-  const [status, setStatus] = useState<string>("Search for a place near you.");
+  const [locationDescription, setLocationDescription] = useState<string>("");
+  const [hasSearched, setHasSearched] = useState(false);
+  const [status, setStatus] = useState<string>(
+    "Enter To service and From location, then search."
+  );
   const [isLoading, setIsLoading] = useState(false);
 
   const effectiveCenter = useMemo<UserLocation>(
     () => userLocation ?? { lat: 20.5937, lng: 78.9629 },
     [userLocation]
   );
+
+  useEffect(() => {
+    const input = query.trim();
+    if (input.length < 2) {
+      setSuggestions([]);
+      return;
+    }
+
+    const timer = setTimeout(async () => {
+      try {
+        const response = await fetch(
+          `/api/places/suggest?` + new URLSearchParams({ input }).toString()
+        );
+        if (!response.ok) return;
+        const body = (await response.json()) as {
+          suggestions?: Array<{ id: string; label: string }>;
+        };
+        setSuggestions(body.suggestions ?? []);
+      } catch {
+        setSuggestions([]);
+      }
+    }, 250);
+
+    return () => clearTimeout(timer);
+  }, [query]);
+
+  const parseQueryAndArea = (input: string): { term: string; area: string } => {
+    const value = input.trim();
+    const parts = value.split(/\s+in\s+/i);
+    if (parts.length > 1) {
+      const area = parts.pop()?.trim() ?? "";
+      const term = parts.join(" in ").trim();
+      return { term, area };
+    }
+    return { term: value, area: "" };
+  };
 
   const requestCurrentLocation = (): Promise<UserLocation> =>
     new Promise((resolve, reject) => {
@@ -67,160 +90,106 @@ export default function NearbySearchSection() {
       );
     });
 
-  const loadGooglePlacesApi = async (): Promise<typeof google> => {
-    if (typeof window === "undefined") {
-      throw new Error("Google Maps can only run in browser.");
-    }
-
-    if (window.google?.maps?.places) return window.google;
-
-    const apiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
-    if (!apiKey) {
-      throw new Error("Missing NEXT_PUBLIC_GOOGLE_MAPS_API_KEY.");
-    }
-
-    await new Promise<void>((resolve, reject) => {
-      const existing = document.getElementById("google-maps-script");
-      if (existing) {
-        existing.addEventListener("load", () => resolve(), { once: true });
-        existing.addEventListener("error", () => reject(new Error("Failed to load Google Maps.")), {
-          once: true,
-        });
-        return;
+  const resolveLocation = async (fromOverride?: string): Promise<UserLocation> => {
+    const fromText = (fromOverride ?? fromLocationText).trim();
+    if (fromText) {
+      const response = await fetch(
+        `/api/places/geocode?` +
+          new URLSearchParams({
+            address: fromText,
+          }).toString()
+      );
+      if (!response.ok) {
+        const body = (await response.json()) as { error?: string };
+        throw new Error(body.error ?? "Could not resolve From location.");
       }
-
-      const script = document.createElement("script");
-      script.id = "google-maps-script";
-      script.src =
-        "https://maps.googleapis.com/maps/api/js?" +
-        new URLSearchParams({
-          key: apiKey,
-          libraries: "places",
-        }).toString();
-      script.async = true;
-      script.defer = true;
-      script.onload = () => resolve();
-      script.onerror = () => reject(new Error("Failed to load Google Maps."));
-      document.head.appendChild(script);
-    });
-
-    if (!window.google?.maps?.places) {
-      throw new Error("Google Places API is unavailable.");
+      const body = (await response.json()) as {
+        lat: number;
+        lng: number;
+        formattedAddress?: string;
+      };
+      setLocationDescription(body.formattedAddress ?? fromText);
+      return { lat: body.lat, lng: body.lng };
     }
 
-    return window.google;
+    if (userLocation) {
+      setLocationDescription("Current device location");
+      return userLocation;
+    }
+
+    throw new Error(
+      "Add From location, or click Use Current Location before searching."
+    );
   };
-
-  const nearbySearchWithPagination = async (
-    service: google.maps.places.PlacesService,
-    request: google.maps.places.PlaceSearchRequest
-  ): Promise<google.maps.places.PlaceResult[]> =>
-    new Promise((resolve, reject) => {
-      const allResults: google.maps.places.PlaceResult[] = [];
-
-      service.nearbySearch(request, (results, status, pagination) => {
-        if (
-          status !== google.maps.places.PlacesServiceStatus.OK &&
-          status !== google.maps.places.PlacesServiceStatus.ZERO_RESULTS
-        ) {
-          reject(new Error("Google Places request failed."));
-          return;
-        }
-
-        if (results?.length) allResults.push(...results);
-
-        if (pagination?.hasNextPage) {
-          setTimeout(() => pagination.nextPage(), 2000);
-          return;
-        }
-
-        resolve(allResults);
-      });
-    });
 
   const fetchNearbyWithinRadius = async (
     term: string,
     location: UserLocation,
     selectedRadius: number
   ): Promise<Place[]> => {
-    const googleMaps = await loadGooglePlacesApi();
-    const service = new googleMaps.maps.places.PlacesService(document.createElement("div"));
-    const request: google.maps.places.PlaceSearchRequest = {
-      location: new googleMaps.maps.LatLng(location.lat, location.lng),
-      radius: selectedRadius,
-      keyword: term,
-    };
+    const response = await fetch(
+      `/api/places/nearby?` +
+        new URLSearchParams({
+          query: term,
+          lat: String(location.lat),
+          lng: String(location.lng),
+          radius: String(selectedRadius),
+        }).toString()
+    );
 
-    const rawResults = await nearbySearchWithPagination(service, request);
-    return rawResults
-      .map((item) => mapGooglePlaceToPlace(item, location))
-      .filter((item): item is Place => Boolean(item))
-      .sort((a, b) => a.distanceMeters - b.distanceMeters);
-  };
-
-  const fetchGlobalMatches = async (term: string, location: UserLocation): Promise<Place[]> => {
-    const googleMaps = await loadGooglePlacesApi();
-    const service = new googleMaps.maps.places.PlacesService(document.createElement("div"));
-
-    const progressivelyWider = [50000, 80000, 120000, 160000];
-    const collected = new Map<string, Place>();
-
-    for (const radius of progressivelyWider) {
-      const request: google.maps.places.PlaceSearchRequest = {
-        location: new googleMaps.maps.LatLng(location.lat, location.lng),
-        radius,
-        keyword: term,
-      };
-      const rawResults = await nearbySearchWithPagination(service, request);
-      const mapped = rawResults
-        .map((item) => mapGooglePlaceToPlace(item, location))
-        .filter((item): item is Place => Boolean(item));
-      mapped.forEach((item) => collected.set(item.id, item));
-      if (collected.size >= 60) break;
+    if (!response.ok) {
+      throw new Error("Nearby search failed. Please try again.");
     }
 
-    return [...collected.values()].sort((a, b) => a.distanceMeters - b.distanceMeters);
-  };
-
-  const getExpandedRadiusSequence = (startRadius: number): number[] => {
-    const sequence = new Set<number>([startRadius, ...AUTO_EXPAND_BASE_STEPS]);
-    let nextRadius = 40000;
-
-    // No fixed upper limit in UX; this keeps requesting wider ranges progressively.
-    while (sequence.size < 20) {
-      sequence.add(nextRadius);
-      nextRadius += 10000;
+    const body = (await response.json()) as { places?: Place[]; error?: string };
+    if (!body.places) {
+      throw new Error(body.error ?? "No place data returned.");
     }
 
-    return [...sequence].sort((a, b) => a - b).filter((value) => value >= startRadius);
+    return body.places.sort((a, b) => a.distanceMeters - b.distanceMeters);
   };
 
   const runSearch = async (term: string, selectedRadius: number) => {
-    if (!term.trim()) return;
+    setHasSearched(true);
+    setShowSuggestions(false);
+
+    const parsed = parseQueryAndArea(term);
+    const effectiveTerm = parsed.term;
+    const effectiveArea = parsed.area;
+
+    if (!effectiveTerm.trim()) {
+      setStatus("Please enter what you want to search (e.g. cafe, medical shop).");
+      return;
+    }
 
     setIsLoading(true);
-    setStatus("Detecting your location...");
+    setStatus("Resolving location...");
 
     try {
-      const location = await requestCurrentLocation();
-      setUserLocation(location);
-      const expandedRadii = getExpandedRadiusSequence(selectedRadius);
-      let foundPlaces: Place[] = [];
-      let matchedRadius = selectedRadius;
-
-      for (const radius of expandedRadii) {
-        setStatus(`Searching "${term}" within ${formatDistance(radius)}...`);
-        const currentResults = await fetchNearbyWithinRadius(term, location, radius);
-        if (currentResults.length > 0) {
-          foundPlaces = currentResults;
-          matchedRadius = radius;
-          break;
-        }
+      if (effectiveArea) {
+        setFromLocationText(effectiveArea);
       }
+      const location = await resolveLocation(effectiveArea || undefined);
+      setUserLocation(location);
+      setStatus(`Searching "${effectiveTerm}" within ${formatDistance(selectedRadius)}...`);
+      let effectiveRadius = selectedRadius;
+      let foundPlaces = await fetchNearbyWithinRadius(effectiveTerm, location, selectedRadius);
 
       if (foundPlaces.length === 0) {
-        setStatus(`Expanding search globally for "${term}"...`);
-        foundPlaces = await fetchGlobalMatches(term, location);
+        for (const stepRadius of EXPAND_STEPS_METERS) {
+          if (stepRadius <= selectedRadius) continue;
+          setStatus(
+            `No result for "${effectiveTerm}" in ${formatDistance(
+              effectiveRadius
+            )}. Expanding search to ${formatDistance(stepRadius)}...`
+          );
+          foundPlaces = await fetchNearbyWithinRadius(effectiveTerm, location, stepRadius);
+          if (foundPlaces.length > 0) {
+            effectiveRadius = stepRadius;
+            break;
+          }
+          effectiveRadius = stepRadius;
+        }
       }
 
       const uniqueById = new Map(foundPlaces.map((place) => [place.id, place]));
@@ -228,16 +197,16 @@ export default function NearbySearchSection() {
         (a, b) => a.distanceMeters - b.distanceMeters
       );
 
-      if (sortedPlaces.length > 0) {
-        setRadiusMeters(Math.max(selectedRadius, matchedRadius));
-      }
+      setRadiusMeters(effectiveRadius);
 
       setPlaces(sortedPlaces);
       setSelectedPlaceId(sortedPlaces[0]?.id ?? null);
       setStatus(
         sortedPlaces.length > 0
-          ? `${sortedPlaces.length} place(s) found using Google Maps. Nearest first.`
-          : `No matching Google Maps data available for "${term}".`
+          ? `${sortedPlaces.length} "${effectiveTerm}" place(s) found in ${formatDistance(
+              effectiveRadius
+            )}. Sorted nearest first.`
+          : `No "${effectiveTerm}" data found for this location right now. Try a broader keyword.`
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : "Something went wrong.";
@@ -257,17 +226,69 @@ export default function NearbySearchSection() {
   return (
     <section className="nearby-shell">
       <form className="toolbar" onSubmit={onSubmit}>
-        <input
-          className="search-input"
-          type="text"
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-          placeholder='Search service, e.g. "salon"'
-        />
+        <div className="search-wrap">
+          <input
+            className="search-input"
+            type="text"
+            value={query}
+            onChange={(event) => {
+              setQuery(event.target.value);
+              setShowSuggestions(true);
+            }}
+            onFocus={() => setShowSuggestions(true)}
+            placeholder='Search anything, e.g. "it company in raipur"'
+          />
+          {showSuggestions && suggestions.length > 0 ? (
+            <div className="suggestions-list">
+              {suggestions.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  className="suggestion-item"
+                  onClick={() => {
+                    setQuery(item.label);
+                    setShowSuggestions(false);
+                  }}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
+          ) : null}
+        </div>
         <button className="search-button" type="submit" disabled={isLoading}>
           {isLoading ? "Searching..." : "Search"}
         </button>
       </form>
+
+      <div className="from-row">
+        <input
+          className="from-input"
+          type="text"
+          value={fromLocationText}
+          onChange={(event) => setFromLocationText(event.target.value)}
+          placeholder='From location (address/area), e.g. "Pune, Maharashtra"'
+        />
+        <button
+          className="location-button"
+          type="button"
+          disabled={isLoading}
+          onClick={async () => {
+            try {
+              setStatus("Detecting current location...");
+              const current = await requestCurrentLocation();
+              setUserLocation(current);
+              setFromLocationText("");
+              setLocationDescription("Current device location");
+              setStatus("Current location captured. Now search.");
+            } catch {
+              setStatus("Current location is blocked. Enter From location manually.");
+            }
+          }}
+        >
+          Use Current Location
+        </button>
+      </div>
 
       <div className="radius-row">
         {RADIUS_OPTIONS.map((value) => (
@@ -312,6 +333,9 @@ export default function NearbySearchSection() {
             onSelectPlace={setSelectedPlaceId}
           />
           <div className="status-chip">{status}</div>
+          {locationDescription ? (
+            <div className="from-chip">From: {locationDescription}</div>
+          ) : null}
         </div>
 
         <aside className="results-panel">
@@ -320,7 +344,9 @@ export default function NearbySearchSection() {
           <div className="results-list">
             {places.length === 0 ? (
               <div className="result-empty">
-                No nearby places yet. Try searching &quot;salon&quot;.
+                {hasSearched
+                  ? `No "${query || "place"}" found. Try keywords like "IT company", "software company", "cafe", "pharmacy".`
+                  : 'Type and select a suggestion, then click Search.'}
               </div>
             ) : (
               places.map((place) => (

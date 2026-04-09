@@ -5,6 +5,7 @@ export type Place = {
   lat: number;
   lon: number;
   distanceMeters: number;
+  rating?: number;
 };
 
 export type UserLocation = {

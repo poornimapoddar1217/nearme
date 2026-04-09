@@ -11,42 +11,26 @@ const NearbyMap = dynamic(() => import("@/components/sections/NearbyMap"), {
 
 const DEFAULT_RADIUS_METERS = 5000;
 const RADIUS_OPTIONS = [5000, 10000, 15000, 20000, 30000] as const;
-const AUTO_EXPAND_BASE_STEPS = [5000, 10000, 15000, 20000, 30000];
+const AUTO_EXPAND_BASE_STEPS = [5000, 10000, 20000, 30000];
 
-type NominatimResult = {
-  place_id: number;
-  display_name: string;
-  lat: string;
-  lon: string;
-};
+function mapGooglePlaceToPlace(
+  item: google.maps.places.PlaceResult,
+  userLocation: UserLocation
+): Place | null {
+  const lat = item.geometry?.location?.lat();
+  const lon = item.geometry?.location?.lng();
 
-function parsePlace(item: NominatimResult, userLocation: UserLocation): Place {
-  const [name, ...rest] = item.display_name.split(",");
-  const lat = Number(item.lat);
-  const lon = Number(item.lon);
-  const distanceMeters = haversineDistanceMeters(userLocation.lat, userLocation.lng, lat, lon);
+  if (typeof lat !== "number" || typeof lon !== "number") return null;
 
   return {
-    id: String(item.place_id),
-    name: name?.trim() || "Unnamed place",
-    address: rest.slice(0, 2).join(",").trim() || "Address unavailable",
+    id: item.place_id ?? `${lat}-${lon}`,
+    name: item.name?.trim() || "Unnamed place",
+    address: item.vicinity?.trim() || item.formatted_address?.trim() || "Address unavailable",
     lat,
     lon,
-    distanceMeters,
+    distanceMeters: haversineDistanceMeters(userLocation.lat, userLocation.lng, lat, lon),
+    rating: typeof item.rating === "number" ? item.rating : undefined,
   };
-}
-
-function getBoundingBox(location: UserLocation, radiusMeters: number): string {
-  const earthRadius = 6371000;
-  const dLat = (radiusMeters / earthRadius) * (180 / Math.PI);
-  const dLng = dLat / Math.cos((location.lat * Math.PI) / 180);
-
-  const left = location.lng - dLng;
-  const top = location.lat + dLat;
-  const right = location.lng + dLng;
-  const bottom = location.lat - dLat;
-
-  return `${left},${top},${right},${bottom}`;
 }
 
 export default function NearbySearchSection() {
@@ -83,54 +67,119 @@ export default function NearbySearchSection() {
       );
     });
 
+  const loadGooglePlacesApi = async (): Promise<typeof google> => {
+    if (typeof window === "undefined") {
+      throw new Error("Google Maps can only run in browser.");
+    }
+
+    if (window.google?.maps?.places) return window.google;
+
+    const apiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
+    if (!apiKey) {
+      throw new Error("Missing NEXT_PUBLIC_GOOGLE_MAPS_API_KEY.");
+    }
+
+    await new Promise<void>((resolve, reject) => {
+      const existing = document.getElementById("google-maps-script");
+      if (existing) {
+        existing.addEventListener("load", () => resolve(), { once: true });
+        existing.addEventListener("error", () => reject(new Error("Failed to load Google Maps.")), {
+          once: true,
+        });
+        return;
+      }
+
+      const script = document.createElement("script");
+      script.id = "google-maps-script";
+      script.src =
+        "https://maps.googleapis.com/maps/api/js?" +
+        new URLSearchParams({
+          key: apiKey,
+          libraries: "places",
+        }).toString();
+      script.async = true;
+      script.defer = true;
+      script.onload = () => resolve();
+      script.onerror = () => reject(new Error("Failed to load Google Maps."));
+      document.head.appendChild(script);
+    });
+
+    if (!window.google?.maps?.places) {
+      throw new Error("Google Places API is unavailable.");
+    }
+
+    return window.google;
+  };
+
+  const nearbySearchWithPagination = async (
+    service: google.maps.places.PlacesService,
+    request: google.maps.places.PlaceSearchRequest
+  ): Promise<google.maps.places.PlaceResult[]> =>
+    new Promise((resolve, reject) => {
+      const allResults: google.maps.places.PlaceResult[] = [];
+
+      service.nearbySearch(request, (results, status, pagination) => {
+        if (
+          status !== google.maps.places.PlacesServiceStatus.OK &&
+          status !== google.maps.places.PlacesServiceStatus.ZERO_RESULTS
+        ) {
+          reject(new Error("Google Places request failed."));
+          return;
+        }
+
+        if (results?.length) allResults.push(...results);
+
+        if (pagination?.hasNextPage) {
+          setTimeout(() => pagination.nextPage(), 2000);
+          return;
+        }
+
+        resolve(allResults);
+      });
+    });
+
   const fetchNearbyWithinRadius = async (
     term: string,
     location: UserLocation,
     selectedRadius: number
   ): Promise<Place[]> => {
-    const viewbox = getBoundingBox(location, selectedRadius);
-    const response = await fetch(
-      `https://nominatim.openstreetmap.org/search?` +
-        new URLSearchParams({
-          q: term,
-          format: "json",
-          limit: "50",
-          addressdetails: "1",
-          bounded: "1",
-          viewbox,
-        }).toString()
-    );
+    const googleMaps = await loadGooglePlacesApi();
+    const service = new googleMaps.maps.places.PlacesService(document.createElement("div"));
+    const request: google.maps.places.PlaceSearchRequest = {
+      location: new googleMaps.maps.LatLng(location.lat, location.lng),
+      radius: selectedRadius,
+      keyword: term,
+    };
 
-    if (!response.ok) {
-      throw new Error("Search failed. Please try again.");
-    }
-
-    const raw = (await response.json()) as NominatimResult[];
-    return raw
-      .map((item) => parsePlace(item, location))
-      .filter((item) => item.distanceMeters <= selectedRadius)
+    const rawResults = await nearbySearchWithPagination(service, request);
+    return rawResults
+      .map((item) => mapGooglePlaceToPlace(item, location))
+      .filter((item): item is Place => Boolean(item))
       .sort((a, b) => a.distanceMeters - b.distanceMeters);
   };
 
   const fetchGlobalMatches = async (term: string, location: UserLocation): Promise<Place[]> => {
-    const response = await fetch(
-      `https://nominatim.openstreetmap.org/search?` +
-        new URLSearchParams({
-          q: term,
-          format: "json",
-          limit: "50",
-          addressdetails: "1",
-        }).toString()
-    );
+    const googleMaps = await loadGooglePlacesApi();
+    const service = new googleMaps.maps.places.PlacesService(document.createElement("div"));
 
-    if (!response.ok) {
-      throw new Error("Search failed. Please try again.");
+    const progressivelyWider = [50000, 80000, 120000, 160000];
+    const collected = new Map<string, Place>();
+
+    for (const radius of progressivelyWider) {
+      const request: google.maps.places.PlaceSearchRequest = {
+        location: new googleMaps.maps.LatLng(location.lat, location.lng),
+        radius,
+        keyword: term,
+      };
+      const rawResults = await nearbySearchWithPagination(service, request);
+      const mapped = rawResults
+        .map((item) => mapGooglePlaceToPlace(item, location))
+        .filter((item): item is Place => Boolean(item));
+      mapped.forEach((item) => collected.set(item.id, item));
+      if (collected.size >= 60) break;
     }
 
-    const raw = (await response.json()) as NominatimResult[];
-    return raw
-      .map((item) => parsePlace(item, location))
-      .sort((a, b) => a.distanceMeters - b.distanceMeters);
+    return [...collected.values()].sort((a, b) => a.distanceMeters - b.distanceMeters);
   };
 
   const getExpandedRadiusSequence = (startRadius: number): number[] => {
@@ -138,9 +187,9 @@ export default function NearbySearchSection() {
     let nextRadius = 40000;
 
     // No fixed upper limit in UX; this keeps requesting wider ranges progressively.
-    while (sequence.size < 18) {
+    while (sequence.size < 20) {
       sequence.add(nextRadius);
-      nextRadius += 20000;
+      nextRadius += 10000;
     }
 
     return [...sequence].sort((a, b) => a - b).filter((value) => value >= startRadius);
@@ -187,8 +236,8 @@ export default function NearbySearchSection() {
       setSelectedPlaceId(sortedPlaces[0]?.id ?? null);
       setStatus(
         sortedPlaces.length > 0
-          ? `${sortedPlaces.length} result(s) found. Nearest first by distance.`
-          : `No matching data available for "${term}".`
+          ? `${sortedPlaces.length} place(s) found using Google Maps. Nearest first.`
+          : `No matching Google Maps data available for "${term}".`
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : "Something went wrong.";
@@ -284,6 +333,9 @@ export default function NearbySearchSection() {
                   <strong>{place.name}</strong>
                   <span>{place.address}</span>
                   <small>{formatDistance(place.distanceMeters)} away</small>
+                  <small>
+                    Rating: {typeof place.rating === "number" ? place.rating.toFixed(1) : "N/A"}
+                  </small>
                 </button>
               ))
             )}

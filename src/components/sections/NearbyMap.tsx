@@ -108,6 +108,12 @@ export default function NearbyMap({
               {place.address}
               <br />
               {formatDistance(place.distanceMeters)} away
+              {typeof place.rating === "number" ? (
+                <>
+                  <br />
+                  Rating: {place.rating.toFixed(1)}
+                </>
+              ) : null}
             </Popup>
           </Marker>
         );

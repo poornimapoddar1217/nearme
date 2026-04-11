@@ -1,0 +1,22 @@
+---
+description: Google Places, geocode, and suggest API routes — keys and patterns
+globs: "src/app/api/places/**/*.ts"
+alwaysApply: false
+---
+
+# Places API routes (`src/app/api/places`)
+
+## Keys
+
+- Server routes read `process.env.GOOGLE_MAPS_API_KEY ?? process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY`.
+- Prefer a dedicated **server** key in production (Vercel: `GOOGLE_MAPS_API_KEY`); browser map uses `NEXT_PUBLIC_GOOGLE_MAPS_API_KEY` with referrer restrictions.
+
+## Google usage
+
+- Nearby search uses **Places API (New)** — `POST https://places.googleapis.com/v1/places:searchText` with `X-Goog-Api-Key` and `X-Goog-FieldMask`. Do not reintroduce legacy `nearbysearch` / `textsearch` JSON endpoints.
+- Geocode uses `https://maps.googleapis.com/maps/api/geocode/json`; suggest uses legacy Place Autocomplete JSON when the key is present.
+- On failure, preserve Nominatim fallbacks and clear JSON error messages for the client where applicable.
+
+## Debugging
+
+- Health check: `GET /api/places/health` (optional `?probe=false` to skip live probes). Use it to verify which key is active and which Google surface returns errors.

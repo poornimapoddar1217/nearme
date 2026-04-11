@@ -1,0 +1,255 @@
+---
+description: Scalability and architecture rules. Apply when designing new features, writing data-fetching logic, structuring state, or planning API design.
+globs: ["**/*.tsx", "**/*.ts", "app/api/**", "lib/**"]
+alwaysApply: false
+---
+
+# Rule 004 — Scalability & Architecture
+
+## Core Principles
+
+- **Separation of concerns**: UI renders, hooks orchestrate, services fetch, utils transform.
+- **Server-first**: Prefer React Server Components and server-side data fetching. Use client components only when needed (interactivity, browser APIs, hooks).
+- **Thin components**: Components should not contain fetch logic, business logic, or complex transformations. They display data and fire events.
+- **Colocation**: Keep code close to where it's used. Extract to shared when reused 3+ times.
+
+## Component Architecture
+
+### Server vs. Client Components
+
+Default to **Server Components**. Add `'use client'` only when the component needs:
+- `useState`, `useReducer`, `useEffect`, or any React hook
+- Browser APIs (`window`, `document`, `navigator`)
+- Event listeners
+- Third-party libs that are client-only
+
+```
+Page (Server)
+ ├── Layout (Server)
+ │    ├── Navbar (Client — needs user session state)
+ │    └── Sidebar (Server)
+ └── DashboardContent (Server)
+      ├── StatsGrid (Server — pure display)
+      └── FilterPanel (Client — interactive)
+```
+
+### Component Size Limit
+
+If a component exceeds **150 lines**, it must be split. Extract:
+- Sub-components for distinct UI sections
+- A custom hook for state and side-effect logic
+- A utility function for data transformations
+
+### Props Design
+
+- Prefer **flat props** over deeply nested objects.
+- Use **TypeScript discriminated unions** for conditional prop patterns:
+
+```ts
+type ButtonProps =
+  | { variant: 'icon'; icon: ReactNode; label: string }
+  | { variant: 'text'; children: ReactNode }
+```
+
+- Avoid prop drilling beyond 2 levels. Use context or Zustand for shared state.
+
+## Data Fetching
+
+### Server Components (preferred)
+
+```tsx
+// app/(dashboard)/users/page.tsx
+import { getUsers } from '@/lib/api/users'
+
+export default async function UsersPage() {
+  const users = await getUsers() // direct async call — no useEffect needed
+  return <UserList users={users} />
+}
+```
+
+### Client Components — use React Query / SWR
+
+```tsx
+// Never fetch in useEffect — use React Query
+const { data: users, isLoading } = useQuery({
+  queryKey: ['users'],
+  queryFn: fetchUsers,
+  staleTime: 60 * 1000, // 1 minute
+})
+```
+
+### API Layer Contract (`lib/api/`)
+
+Every resource has its own file. All API functions follow this pattern:
+
+```ts
+// lib/api/users.ts
+import { env } from '@/lib/config/env'
+import type { User, CreateUserInput } from '@/types'
+
+export async function getUsers(): Promise<User[]> {
+  const res = await fetch(`${env.NEXT_PUBLIC_APP_URL}/api/users`, {
+    next: { revalidate: 60 }, // Next.js cache
+  })
+  if (!res.ok) throw new Error('Failed to fetch users')
+  return res.json()
+}
+
+export async function createUser(input: CreateUserInput): Promise<User> {
+  const res = await fetch(`${env.NEXT_PUBLIC_APP_URL}/api/users`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  })
+  if (!res.ok) throw new Error('Failed to create user')
+  return res.json()
+}
+```
+
+## State Management
+
+| State Type | Tool |
+|---|---|
+| Server / async data | React Query or SWR |
+| Global UI state (theme, sidebar, modals) | Zustand |
+| Form state | React Hook Form |
+| URL state (filters, pagination) | `nuqs` (typed URL search params) |
+| Ephemeral local state | `useState` |
+
+### Zustand Store Pattern
+
+```ts
+// lib/store/uiStore.ts
+import { create } from 'zustand'
+
+interface UIState {
+  sidebarOpen: boolean
+  toggleSidebar: () => void
+  theme: 'light' | 'dark'
+  setTheme: (theme: 'light' | 'dark') => void
+}
+
+export const useUIStore = create<UIState>((set) => ({
+  sidebarOpen: true,
+  toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
+  theme: 'light',
+  setTheme: (theme) => set({ theme }),
+}))
+```
+
+- One Zustand store per domain.
+- Never put server/async data in Zustand — that's React Query's job.
+
+## API Route Design
+
+### RESTful convention
+
+```
+GET    /api/users          → list
+POST   /api/users          → create
+GET    /api/users/[id]     → get one
+PATCH  /api/users/[id]     → update
+DELETE /api/users/[id]     → delete
+```
+
+### Route Handler Structure
+
+```ts
+// app/api/users/route.ts
+import { getServerSession } from 'next-auth'
+import { authOptions } from '@/lib/auth/config'
+import { ratelimit } from '@/lib/api/rateLimit'
+import { createUserSchema } from '@/lib/validations/user'
+import { userService } from '@/lib/services/userService'
+
+export async function POST(req: Request) {
+  // 1. Rate limit
+  const { success } = await ratelimit.limit(req.headers.get('x-forwarded-for') ?? 'anon')
+  if (!success) return Response.json({ error: 'Too many requests' }, { status: 429 })
+
+  // 2. Auth
+  const session = await getServerSession(authOptions)
+  if (!session) return Response.json({ error: 'Unauthorized' }, { status: 401 })
+
+  // 3. Validate
+  const body = await req.json()
+  const parsed = createUserSchema.safeParse(body)
+  if (!parsed.success) return Response.json({ error: parsed.error.flatten() }, { status: 400 })
+
+  // 4. Business logic (delegated to service layer)
+  const user = await userService.create(parsed.data)
+  return Response.json(user, { status: 201 })
+}
+```
+
+## TypeScript
+
+- **Strict mode is always on** (`"strict": true` in `tsconfig.json`).
+- **No `any` type.** Use `unknown` and narrow it, or define a proper type.
+- **All function signatures are typed** — no implicit return types on exported functions.
+- Use `type` for unions, intersections, and aliases. Use `interface` for object shapes that may be extended.
+
+```ts
+// types/api.ts — reusable API response wrappers
+export type ApiResponse<T> = {
+  data: T
+  message?: string
+}
+
+export type ApiError = {
+  error: string
+  details?: Record<string, string[]>
+}
+
+export type PaginatedResponse<T> = {
+  data: T[]
+  pagination: {
+    page: number
+    pageSize: number
+    total: number
+    totalPages: number
+  }
+}
+```
+
+## Performance
+
+1. **Dynamic imports** for heavy components not needed on initial load:
+```ts
+const HeavyChart = dynamic(() => import('@/components/features/analytics/HeavyChart'), {
+  loading: () => <Skeleton />,
+  ssr: false,
+})
+```
+
+2. **Image optimization**: Always use Next.js `<Image>` — never `<img>` for content images.
+
+3. **Avoid layout thrash**: Don't read and write DOM properties in the same tick.
+
+4. **Memoize selectively**: Use `useMemo` and `useCallback` only for genuinely expensive operations or referentially stable prop callbacks, not by default.
+
+5. **Bundle size**: Run `next build --analyze` before merging large dependency additions.
+
+## Testing Requirements
+
+| Layer | Test Type | Tool |
+|---|---|---|
+| Utilities / hooks | Unit | Vitest |
+| UI Components | Component | RTL + Vitest |
+| API routes | Integration | Vitest + msw |
+| Critical user flows | E2E | Playwright |
+
+- Every new component must have at minimum a **render test** and a test for its primary interaction.
+- Every utility function must have **unit tests covering edge cases**.
+- No PR merges with a test coverage decrease on critical paths.
+
+## Prohibited
+
+- ❌ `any` type
+- ❌ `useEffect` for data fetching (use React Query / SWR)
+- ❌ Business logic inside React components
+- ❌ Direct `fetch()` calls inside components — always go through `lib/api/`
+- ❌ Prop drilling past 2 levels
+- ❌ Mutating state directly in Zustand (always use setter functions)
+- ❌ Importing from `app/` inside `lib/` or `components/` (one-way dependency flow only)
+- ❌ Committing code with TypeScript errors (`tsc --noEmit` must pass)

@@ -1,0 +1,159 @@
+---
+description: Enforce theme and design system consistency. Apply whenever writing or editing any component, CSS, or Tailwind class.
+globs: ["**/*.tsx", "**/*.ts", "**/*.css", "**/tailwind.config.*"]
+alwaysApply: false
+---
+
+# Rule 002 — Theme & Design Consistency
+
+## Design Token Authority
+
+The single source of truth for all visual values is **`tailwind.config.ts`**.
+No component may use raw hex codes, hardcoded pixel values, or arbitrary Tailwind classes for colors and spacing.
+
+### Color System
+
+```ts
+// tailwind.config.ts — extend this, never bypass it
+theme: {
+  extend: {
+    colors: {
+      // Brand palette
+      brand: {
+        50:  '#f0f9ff',
+        100: '#e0f2fe',
+        500: '#0ea5e9',   // Primary action
+        600: '#0284c7',   // Primary hover
+        700: '#0369a1',   // Primary active
+        900: '#0c4a6e',   // Dark variant
+      },
+      // Semantic aliases — USE THESE in components, not raw brand colors
+      primary:    'var(--color-primary)',
+      secondary:  'var(--color-secondary)',
+      accent:     'var(--color-accent)',
+      surface:    'var(--color-surface)',
+      muted:      'var(--color-muted)',
+      destructive:'var(--color-destructive)',
+      success:    'var(--color-success)',
+      warning:    'var(--color-warning)',
+    },
+    // Spacing scale — use these instead of arbitrary values
+    spacing: {
+      // The default Tailwind scale is extended, not replaced.
+      // Add project-specific steps here if needed.
+    },
+    // Typography scale
+    fontFamily: {
+      sans:  ['var(--font-sans)', 'sans-serif'],
+      mono:  ['var(--font-mono)', 'monospace'],
+      display: ['var(--font-display)', 'sans-serif'],
+    },
+    borderRadius: {
+      DEFAULT: '0.5rem',   // --radius
+      sm: '0.25rem',
+      lg: '0.75rem',
+      xl: '1rem',
+    },
+  }
+}
+```
+
+### CSS Variables (in `globals.css`)
+
+```css
+/* Light theme */
+:root {
+  --color-primary:     theme('colors.brand.500');
+  --color-secondary:   theme('colors.slate.600');
+  --color-accent:      theme('colors.violet.500');
+  --color-surface:     theme('colors.white');
+  --color-muted:       theme('colors.slate.100');
+  --color-destructive: theme('colors.red.500');
+  --color-success:     theme('colors.green.500');
+  --color-warning:     theme('colors.amber.500');
+  --radius:            0.5rem;
+}
+
+/* Dark theme */
+.dark {
+  --color-primary:     theme('colors.brand.400');
+  --color-surface:     theme('colors.slate.900');
+  --color-muted:       theme('colors.slate.800');
+}
+```
+
+## Component Styling Rules
+
+1. **Use semantic color names**, not raw palette steps.
+   - ✅ `className="bg-primary text-white"`
+   - ❌ `className="bg-sky-500 text-white"` (bypasses the design token)
+
+2. **No inline `style` props for theming.** Inline styles are allowed only for computed/dynamic values (e.g., animation transforms, chart dimensions).
+
+3. **Dark mode via class strategy.** The app uses `class` dark mode in Tailwind (`darkMode: 'class'`). Use `dark:` variants — do not use `prefers-color-scheme` media queries in CSS.
+
+4. **Responsive design is mobile-first.** Always write base styles for mobile, then `sm:`, `md:`, `lg:`, `xl:` breakpoints.
+
+5. **No magic numbers.** Use Tailwind's spacing scale (`p-4`, `gap-6`, `mt-8`). If you need a one-off size, add it to the spacing config.
+
+6. **Typography uses the type scale.** Use `text-sm`, `text-base`, `text-lg`, `text-xl`, `text-2xl` etc. Do not use arbitrary `text-[14px]` unless absolutely unavoidable.
+
+## Component Variants Pattern
+
+Use `cva` (class-variance-authority) for components that have variants:
+
+```tsx
+// components/ui/Button.tsx
+import { cva, type VariantProps } from 'class-variance-authority'
+
+const buttonVariants = cva(
+  // Base classes
+  'inline-flex items-center justify-center rounded font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:pointer-events-none disabled:opacity-50',
+  {
+    variants: {
+      variant: {
+        default:     'bg-primary text-white hover:bg-primary/90',
+        secondary:   'bg-secondary text-white hover:bg-secondary/90',
+        destructive: 'bg-destructive text-white hover:bg-destructive/90',
+        outline:     'border border-primary text-primary hover:bg-primary/10',
+        ghost:       'hover:bg-muted',
+        link:        'text-primary underline-offset-4 hover:underline',
+      },
+      size: {
+        sm:   'h-8  px-3 text-sm',
+        md:   'h-10 px-4 text-base',
+        lg:   'h-12 px-6 text-lg',
+        icon: 'h-10 w-10',
+      },
+    },
+    defaultVariants: {
+      variant: 'default',
+      size: 'md',
+    },
+  }
+)
+```
+
+## Icon Usage
+
+- Use a **single icon library** project-wide (e.g., `lucide-react`). Do not mix multiple icon sets.
+- Icons must use `aria-hidden="true"` when decorative, or have an accessible label.
+
+## Animation
+
+- Prefer Tailwind's built-in transition utilities (`transition`, `duration-200`, `ease-in-out`) for simple state transitions.
+- Use `framer-motion` for complex animations — do not write custom keyframe CSS unless unavoidable.
+- Respect `prefers-reduced-motion`. Wrap Framer Motion animations with a check:
+
+```ts
+const prefersReduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+```
+
+## Prohibited
+
+- ❌ Arbitrary Tailwind color values: `text-[#3b82f6]`, `bg-[#fff]`
+- ❌ Inline `style={{ color: '#fff' }}`  for theming values
+- ❌ `!important` in any CSS
+- ❌ Using `@apply` with more than 3 Tailwind classes (prefer component abstraction)
+- ❌ Hardcoded font sizes or line heights outside the Tailwind scale
+- ❌ Mixing multiple CSS-in-JS libraries

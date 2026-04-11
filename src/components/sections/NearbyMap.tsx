@@ -44,10 +44,10 @@ function RadiusCircle({
       map,
       center: { lat: center.lat, lng: center.lng },
       radius: radiusMeters,
-      strokeColor: "#ff3b3b",
+      strokeColor: "#e85d4c",
       strokeOpacity: 0.9,
       strokeWeight: 2,
-      fillColor: "#ff3b3b",
+      fillColor: "#e85d4c",
       fillOpacity: 0.12,
     });
     return () => circle.setMap(null);
@@ -119,12 +119,12 @@ export default function NearbyMap({
                   setOpenInfoId(place.id);
                 }}
               >
-                <Pin
-                  background="#ff3b3b"
-                  borderColor="#ffffff"
-                  glyphColor="#ffffff"
-                  scale={isSelected ? 1.2 : 1}
-                />
+            <Pin
+              background="#e85d4c"
+              borderColor="#ffffff"
+              glyphColor="#ffffff"
+              scale={isSelected ? 1.2 : 1}
+            />
               </AdvancedMarker>
             );
           }

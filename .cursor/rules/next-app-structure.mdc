@@ -1,0 +1,31 @@
+---
+description: Next.js App Router layout, components, and styling conventions
+alwaysApply: true
+---
+
+# Near Me — App conventions
+
+## Structure
+
+- Follow App Router: `src/app/` for routes, `src/components/ui|layout|sections` for UI, `src/lib` helpers, `src/hooks`, `src/types`.
+- Do not add duplicate folders or one-off files without a clear purpose.
+
+## Components
+
+- Default to Server Components; add `"use client"` only when the file needs browser APIs, hooks, or event handlers.
+- Prefer small components; keep files under ~200 lines; no repeated JSX—extract when reused twice.
+- PascalCase for components; match existing import and naming style.
+
+## Styling
+
+- Use theme tokens from `globals.css` / Tailwind theme—no hardcoded hex colors for UI.
+- Avoid inline styles unless necessary; keep spacing and typography consistent with existing sections.
+
+## Quality
+
+- No `console.log` in code meant for production; remove unused imports and dead commented code.
+- Prefer focused diffs: change only what the task needs; avoid drive-by refactors.
+
+## Maps / search UI
+
+- Map and location search live in `NearbySearchSection` and `NearbyMap`; extend existing patterns instead of parallel implementations.

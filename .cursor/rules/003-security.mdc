@@ -1,0 +1,166 @@
+---
+description: Security rules. Apply when writing API routes, auth logic, environment config, DB queries, or any code handling user input.
+globs: ["app/api/**", "lib/auth/**", "lib/db/**", "lib/api/**", "middleware.ts", "**/*.env*"]
+alwaysApply: false
+---
+
+# Rule 003 — Security
+
+## Environment Variables
+
+1. **Never hardcode secrets.** No API keys, database URLs, JWT secrets, or tokens in source files.
+2. **Use `.env.local` for local dev.** Commit only `.env.example` with placeholder values.
+3. **Validate all env vars at startup** using a schema (e.g., with `zod`):
+
+```ts
+// lib/config/env.ts  — import this wherever env vars are needed
+import { z } from 'zod'
+
+const envSchema = z.object({
+  DATABASE_URL:        z.string().url(),
+  NEXTAUTH_SECRET:     z.string().min(32),
+  NEXTAUTH_URL:        z.string().url(),
+  NEXT_PUBLIC_APP_URL: z.string().url(),
+  // Add all required vars here
+})
+
+export const env = envSchema.parse(process.env)
+```
+
+4. **Never expose server-side vars to the client.** Only `NEXT_PUBLIC_*` variables reach the browser — treat them as public.
+
+## Authentication & Authorization
+
+1. **Every protected route must check the session** — at the middleware level, not just on the page.
+
+```ts
+// middleware.ts
+import { withAuth } from 'next-auth/middleware'
+
+export default withAuth({
+  callbacks: {
+    authorized: ({ token }) => !!token,
+  },
+})
+
+export const config = {
+  matcher: ['/dashboard/:path*', '/api/protected/:path*'],
+}
+```
+
+2. **Role-based access control (RBAC)** must be enforced server-side. Never trust client-sent role claims.
+
+```ts
+// lib/auth/guards.ts
+export async function requireRole(session: Session | null, role: UserRole) {
+  if (!session || session.user.role !== role) {
+    throw new UnauthorizedError('Insufficient permissions')
+  }
+}
+```
+
+3. **Never store sensitive data in `localStorage` or `sessionStorage`.** Use HTTP-only cookies for session tokens.
+
+4. **Password hashing**: Use `bcrypt` with a minimum cost factor of 12. Never store plaintext passwords.
+
+## Input Validation & Sanitization
+
+1. **All user input must be validated** with Zod before processing — both on the client (for UX) and server (for security).
+2. **API route handlers must validate the request body:**
+
+```ts
+// app/api/users/route.ts
+import { createUserSchema } from '@/lib/validations/user'
+
+export async function POST(req: Request) {
+  const body = await req.json()
+  const parsed = createUserSchema.safeParse(body)
+
+  if (!parsed.success) {
+    return Response.json({ error: parsed.error.flatten() }, { status: 400 })
+  }
+  // proceed with parsed.data — never raw body
+}
+```
+
+3. **Sanitize all HTML output.** If rendering user-generated HTML, use `DOMPurify`. Never use `dangerouslySetInnerHTML` with unsanitized content.
+
+## Database
+
+1. **Always use Prisma's parameterized queries.** Never use raw string interpolation in SQL queries.
+   - ✅ `prisma.user.findUnique({ where: { id } })`
+   - ❌ `prisma.$queryRawUnsafe(\`SELECT * FROM users WHERE id = ${id}\`)`
+
+2. **Apply the principle of least privilege** to database roles. The app DB user should not have DROP, CREATE, or admin permissions.
+
+3. **Never return the full DB model to the client.** Always select only the fields needed:
+
+```ts
+const user = await prisma.user.findUnique({
+  where: { id },
+  select: { id: true, name: true, email: true }, // not passwordHash, not role
+})
+```
+
+## API Security
+
+1. **Rate limiting** on all public API routes using `@upstash/ratelimit` or equivalent:
+
+```ts
+// lib/api/rateLimit.ts
+import { Ratelimit } from '@upstash/ratelimit'
+import { kv } from '@vercel/kv'
+
+export const ratelimit = new Ratelimit({
+  redis: kv,
+  limiter: Ratelimit.slidingWindow(10, '10 s'),
+})
+```
+
+2. **CSRF protection** is handled automatically by Next.js for Server Actions. For API routes, verify the `Origin` header.
+
+3. **Content Security Policy (CSP)** headers must be set in `next.config.ts`:
+
+```ts
+const cspHeader = `
+  default-src 'self';
+  script-src 'self' 'nonce-{NONCE}';
+  style-src 'self' 'unsafe-inline';
+  img-src 'self' blob: data:;
+  font-src 'self';
+  connect-src 'self';
+  frame-ancestors 'none';
+`
+```
+
+4. **HTTP security headers** (set in `next.config.ts` headers config):
+   - `X-Frame-Options: DENY`
+   - `X-Content-Type-Options: nosniff`
+   - `Referrer-Policy: strict-origin-when-cross-origin`
+   - `Permissions-Policy: camera=(), microphone=(), geolocation=()`
+
+## Error Handling
+
+1. **Never expose stack traces or internal errors to the client.** Log them server-side; return generic error messages to the user.
+
+```ts
+// Good pattern
+try {
+  await sensitiveOperation()
+} catch (err) {
+  console.error('[sensitiveOperation] failed:', err) // server log
+  return Response.json({ error: 'Something went wrong' }, { status: 500 }) // client response
+}
+```
+
+2. **Use custom error classes** in `lib/utils/errors.ts` (`NotFoundError`, `UnauthorizedError`, `ValidationError`) so error types are consistent and handleable.
+
+## Prohibited
+
+- ❌ `console.log` of sensitive data (tokens, passwords, PII)
+- ❌ `eval()` or `Function()` with dynamic strings
+- ❌ Disabled TypeScript strict mode
+- ❌ Skipping server-side auth checks because "the page is already protected"
+- ❌ Committing `.env.local` or any file containing real secrets
+- ❌ `dangerouslySetInnerHTML` without `DOMPurify`
+- ❌ JWT tokens stored in localStorage

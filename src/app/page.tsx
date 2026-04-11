@@ -5,7 +5,10 @@ export default function HomePage() {
     <main className="page-root">
       <header className="page-header">
         <h1>Near Me</h1>
-        <p>Search a place like &quot;salon&quot; and discover nearby results on the map.</p>
+        <p>
+          Search for any place or service, see it on the map, and browse a clean list sorted by
+          distance with ratings.
+        </p>
       </header>
       <NearbySearchSection />
     </main>

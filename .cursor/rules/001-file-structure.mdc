@@ -1,0 +1,100 @@
+---
+description: Enforce canonical file and folder structure for the project. Apply when creating, moving, or renaming any file.
+globs: ["**/*"]
+alwaysApply: true
+---
+
+# Rule 001 — File & Folder Structure
+
+## Canonical Directory Layout
+
+```
+project-root/
+├── .cursor/
+│   └── rules/                        # All Cursor rule files
+├── app/                              # Next.js App Router pages & layouts
+│   ├── (auth)/                       # Route group: auth pages (login, register)
+│   │   └── login/
+│   │       └── page.tsx
+│   ├── (dashboard)/                  # Route group: authenticated pages
+│   │   └── layout.tsx
+│   ├── api/                          # Next.js API route handlers
+│   │   └── [resource]/
+│   │       └── route.ts
+│   ├── layout.tsx                    # Root layout
+│   ├── page.tsx                      # Root page
+│   └── globals.css                   # Global CSS (only Tailwind directives here)
+│
+├── components/                       # All React components
+│   ├── ui/                           # Primitive/atomic components (Button, Input, Modal…)
+│   ├── layout/                       # Layout components (Navbar, Sidebar, Footer…)
+│   ├── features/                     # Feature-specific component groups
+│   │   └── [feature-name]/           # e.g. components/features/auth/
+│   └── shared/                       # Cross-feature reusable components
+│
+├── lib/                              # Pure logic, utilities, and integrations
+│   ├── api/                          # API client functions (one file per resource)
+│   ├── auth/                         # Auth helpers and config
+│   ├── db/                           # Prisma client and DB utilities
+│   ├── hooks/                        # Custom React hooks
+│   ├── store/                        # Zustand stores (one file per domain)
+│   ├── utils/                        # Pure utility functions
+│   └── validations/                  # Zod schemas (one file per domain)
+│
+├── types/                            # TypeScript types and interfaces
+│   ├── api.ts                        # API request/response types
+│   ├── auth.ts                       # Auth-related types
+│   └── index.ts                      # Barrel export for all types
+│
+├── prisma/                           # Prisma schema and migrations
+│   ├── schema.prisma
+│   └── migrations/
+│
+├── public/                           # Static assets
+│   ├── images/
+│   ├── icons/
+│   └── fonts/
+│
+├── config/                           # App-level configuration constants
+│   ├── constants.ts                  # App-wide constants (never env vars)
+│   ├── routes.ts                     # Centralized route definitions
+│   └── metadata.ts                   # SEO/metadata config
+│
+├── tests/                            # Test utilities and global test setup
+│   └── setup.ts
+│
+└── [config files]                    # package.json, tsconfig, tailwind, eslint, etc.
+```
+
+## Naming Conventions
+
+| Item | Convention | Example |
+|---|---|---|
+| React components | PascalCase | `UserCard.tsx` |
+| Component folders | PascalCase (co-located) | `UserCard/index.tsx` |
+| Hooks | camelCase prefixed `use` | `useAuthUser.ts` |
+| Utility functions | camelCase | `formatCurrency.ts` |
+| Zustand stores | camelCase suffixed `Store` | `authStore.ts` |
+| Zod schemas | camelCase suffixed `Schema` | `loginSchema.ts` |
+| API route handlers | `route.ts` (Next.js convention) | `app/api/users/route.ts` |
+| Types/interfaces | PascalCase | `UserProfile`, `ApiResponse<T>` |
+| Constants | SCREAMING_SNAKE_CASE | `MAX_RETRY_COUNT` |
+| CSS class files | kebab-case | `user-card.module.css` |
+| Test files | Same name + `.test` or `.spec` | `UserCard.test.tsx` |
+
+## Rules
+
+1. **One component per file.** No exporting multiple components from a single file.
+2. **Co-locate tests.** A component test lives next to the component, not in a separate `__tests__` folder, unless it is a global test utility.
+3. **Feature folders own their dependencies.** A feature in `components/features/auth/` imports only from `lib/`, `components/ui/`, or `types/`. It never imports from another feature folder directly.
+4. **No barrel files in `app/`.** Only use `index.ts` barrel exports in `components/`, `lib/`, and `types/`.
+5. **API route files are thin.** Route handlers in `app/api/` call service functions in `lib/api/` — no business logic inside route handlers.
+6. **All routes are defined in `config/routes.ts`.** Never hardcode route strings in components.
+
+## Prohibited
+
+- ❌ Files placed at the project root other than config files (package.json, tsconfig, etc.)
+- ❌ Components inside `app/` — move to `components/`
+- ❌ Business logic inside page or layout files
+- ❌ Import paths using `../../../` more than 2 levels deep — use `@/` aliases instead
+- ❌ Files named `index.tsx` for components (except inside named folders); use descriptive names

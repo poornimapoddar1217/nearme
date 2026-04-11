@@ -4,7 +4,8 @@
   "private": true,
   "description": "Nearby place search map in Next.js",
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev --webpack",
+    "dev:clean": "node -e \"try{require('fs').rmSync('.next',{recursive:true,force:true})}catch(e){}\" && next dev --webpack",
     "build": "next build",
     "start": "next start",
     "lint": "eslint ."

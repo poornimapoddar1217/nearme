@@ -1,0 +1,37 @@
+---
+description: Project-wide rules overview — read this first before any other rule file.
+globs: ["**/*"]
+alwaysApply: true
+---
+
+# Project Rules — Master Overview
+
+This project enforces strict conventions across four pillars:
+
+| Pillar | Rule File |
+|---|---|
+| File & Folder Structure | `001-file-structure.mdc` |
+| Theme & Design Consistency | `002-theme.mdc` |
+| Security | `003-security.mdc` |
+| Scalability & Architecture | `004-scalability.mdc` |
+
+## Non-Negotiables
+
+- Every file must live in its designated folder (see `001-file-structure.mdc`).
+- No hardcoded secrets, tokens, or credentials anywhere in source code.
+- All UI must use design tokens from `tailwind.config.ts` — no raw hex values or arbitrary Tailwind classes for colors/spacing.
+- Components are small, single-responsibility, and co-located with their tests.
+- All external API calls go through the `/lib/api/` layer — never directly from a component.
+
+## Tech Stack
+
+- **Framework**: Next.js 14+ (App Router)
+- **Language**: TypeScript (strict mode)
+- **Styling**: Tailwind CSS + design tokens
+- **State**: Zustand (client), React Query / SWR (server state)
+- **Auth**: NextAuth.js
+- **DB ORM**: Prisma
+- **Testing**: Vitest + React Testing Library
+- **Linting**: ESLint + Prettier
+
+When in doubt, prefer explicit over implicit, and boring over clever.

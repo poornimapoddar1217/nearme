@@ -181,9 +181,36 @@ export default function NearbySearchSection() {
     return { lat, lng };
   };
 
+  /** Short label for From field (first segments of a long address). */
+  const shortenAddressLabel = (full: string, maxLen = 72): string => {
+    const t = full.trim();
+    if (t.length <= maxLen) return t;
+    const parts = t.split(",").map((p) => p.trim());
+    const short = parts.slice(0, 3).join(", ");
+    return short.length <= maxLen ? short : `${t.slice(0, maxLen - 1)}…`;
+  };
+
+  const reverseGeocodeLabel = async (coords: UserLocation): Promise<string> => {
+    const response = await fetch(
+      `/api/places/geocode?` +
+        new URLSearchParams({
+          lat: String(coords.lat),
+          lng: String(coords.lng),
+        }).toString()
+    );
+    const body = await readResponseJson<{
+      error?: string;
+      formattedAddress?: string;
+    }>(response);
+    if (!response.ok) {
+      return `${coords.lat.toFixed(4)}, ${coords.lng.toFixed(4)}`;
+    }
+    return body.formattedAddress?.trim() || `${coords.lat.toFixed(4)}, ${coords.lng.toFixed(4)}`;
+  };
+
   type SearchOrigin = { coords: UserLocation; areaHint: string };
 
-  /** Resolves map center: explicit area in query, From field, inferred city from query tail, GPS mode, or last point. */
+  /** Resolves map center: explicit area in query, GPS mode (before From text), manual From, infer, last point. */
   const resolveLocationForSearch = async (
     areaFromQuery: string,
     termForInference: string
@@ -194,6 +221,21 @@ export default function NearbySearchSection() {
       setUsingDeviceLocation(false);
       const coords = await geocodeAddress(area);
       return { coords, areaHint: area };
+    }
+
+    if (usingDeviceLocation) {
+      setStatusTone("neutral");
+      setStatus("Refreshing your location…");
+      const fresh = await requestCurrentLocation();
+      setUserLocation(fresh);
+      try {
+        const label = shortenAddressLabel(await reverseGeocodeLabel(fresh));
+        setFromLocationText(label);
+        setLocationDescription(label);
+      } catch {
+        setLocationDescription("Current device location");
+      }
+      return { coords: fresh, areaHint: "" };
     }
 
     const manualFrom = fromLocationText.trim();
@@ -214,15 +256,6 @@ export default function NearbySearchSection() {
         setFromLocationText("");
         // fall through to GPS / error
       }
-    }
-
-    if (usingDeviceLocation) {
-      setStatusTone("neutral");
-      setStatus("Refreshing your location…");
-      const fresh = await requestCurrentLocation();
-      setUserLocation(fresh);
-      setLocationDescription("Current device location");
-      return { coords: fresh, areaHint: "" };
     }
 
     if (userLocation) {
@@ -415,9 +448,9 @@ export default function NearbySearchSection() {
           <div>
             <p className="control-card-title">Search</p>
             <p className="control-card-hint">
-              Put the area in the search: <strong>cafe in Raipur</strong>,{" "}
-              <strong>hospital near Pune</strong>, or <strong>salon, Mumbai</strong> — no GPS
-              needed. Or use <strong>Use my location</strong> / the <strong>From</strong> field.
+              Tap <strong>Use my location</strong> — your area appears in <strong>From</strong>, then
+              search <strong>spa</strong>, <strong>hotel</strong>, etc. near you. Or put the city in
+              the search: <strong>cafe in Raipur</strong>, <strong>salon, Mumbai</strong>.
             </p>
           </div>
         </div>
@@ -479,7 +512,7 @@ export default function NearbySearchSection() {
               setFromLocationText(v);
               if (v.trim().length > 0) setUsingDeviceLocation(false);
             }}
-            placeholder="From: city or address (optional if “Use my location” is on)"
+            placeholder="From: filled automatically when you use GPS, or type a city"
             aria-label="Starting location"
           />
           <button
@@ -493,10 +526,21 @@ export default function NearbySearchSection() {
                 setStatus("Detecting your location…");
                 const current = await requestCurrentLocation();
                 setUserLocation(current);
-                setFromLocationText("");
                 setUsingDeviceLocation(true);
-                setLocationDescription("Current device location");
-                setStatus("Device location is on — each search will use your GPS. Run a search.");
+                setStatus("Looking up address for your location…");
+                try {
+                  const label = shortenAddressLabel(await reverseGeocodeLabel(current));
+                  setFromLocationText(label);
+                  setLocationDescription(label);
+                } catch {
+                  setFromLocationText(
+                    `${current.lat.toFixed(4)}, ${current.lng.toFixed(4)}`
+                  );
+                  setLocationDescription("Current device location");
+                }
+                setStatus(
+                  "Location saved — From shows your area. Search e.g. “spa” to find places near you."
+                );
                 setStatusTone("success");
               } catch {
                 setUsingDeviceLocation(false);
@@ -511,8 +555,9 @@ export default function NearbySearchSection() {
         {usingDeviceLocation && userLocation ? (
           <p className="location-mode-banner" role="status">
             <span className="location-mode-dot" aria-hidden />
-            Device location is <strong>active</strong> — each search without a From line or an
-            &quot;… in area&quot; phrase refreshes GPS and centers on you.
+            Device location is <strong>active</strong> — searches like <strong>spa</strong> or{" "}
+            <strong>hotel</strong> use your GPS (refreshed each search). Use &quot;… in City&quot; in
+            the search box to search a different town instead.
           </p>
         ) : null}
 

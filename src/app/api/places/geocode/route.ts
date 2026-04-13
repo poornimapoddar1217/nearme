@@ -15,6 +15,7 @@ type GoogleGeocodeResponse = {
 
 const GOOGLE_GEOCODE_ENDPOINT = "https://maps.googleapis.com/maps/api/geocode/json";
 const NOMINATIM_SEARCH_ENDPOINT = "https://nominatim.openstreetmap.org/search";
+const NOMINATIM_REVERSE_ENDPOINT = "https://nominatim.openstreetmap.org/reverse";
 
 type NominatimResult = {
   lat?: string;
@@ -41,12 +42,92 @@ function scoreNominatimResult(item: NominatimResult): number {
   return base + typeBoost;
 }
 
+async function reverseGeocodeLatLng(
+  lat: number,
+  lng: number,
+  apiKey: string | undefined
+): Promise<NextResponse> {
+  if (apiKey) {
+    try {
+      const params = new URLSearchParams({
+        key: apiKey,
+        latlng: `${lat},${lng}`,
+      });
+      const response = await fetch(`${GOOGLE_GEOCODE_ENDPOINT}?${params.toString()}`, {
+        cache: "no-store",
+      });
+      if (response.ok) {
+        const data = (await response.json()) as GoogleGeocodeResponse;
+        const first = data.results?.[0];
+        const outLat = first?.geometry?.location?.lat;
+        const outLng = first?.geometry?.location?.lng;
+        if (typeof outLat === "number" && typeof outLng === "number") {
+          return NextResponse.json({
+            lat: outLat,
+            lng: outLng,
+            formattedAddress: first?.formatted_address ?? `${lat}, ${lng}`,
+          });
+        }
+      }
+    } catch {
+      // Nominatim below
+    }
+  }
+
+  try {
+    const params = new URLSearchParams({
+      lat: String(lat),
+      lon: String(lng),
+      format: "json",
+      addressdetails: "1",
+    });
+    const response = await fetch(`${NOMINATIM_REVERSE_ENDPOINT}?${params.toString()}`, {
+      headers: { "User-Agent": "near-me-app/1.0" },
+      cache: "no-store",
+    });
+    if (response.ok) {
+      const data = (await response.json()) as { display_name?: string; lat?: string; lon?: string };
+      const name = data.display_name?.trim();
+      const nLat = Number(data.lat ?? lat);
+      const nLng = Number(data.lon ?? lng);
+      if (name && Number.isFinite(nLat) && Number.isFinite(nLng)) {
+        return NextResponse.json({
+          lat: nLat,
+          lng: nLng,
+          formattedAddress: name,
+        });
+      }
+    }
+  } catch {
+    // fall through
+  }
+
+  return NextResponse.json({
+    lat,
+    lng,
+    formattedAddress: `${lat.toFixed(5)}, ${lng.toFixed(5)}`,
+  });
+}
+
 export async function GET(request: NextRequest) {
   const apiKey = process.env.GOOGLE_MAPS_API_KEY ?? process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
 
+  const latRaw = request.nextUrl.searchParams.get("lat");
+  const lngRaw = request.nextUrl.searchParams.get("lng");
+  if (latRaw !== null && lngRaw !== null && latRaw !== "" && lngRaw !== "") {
+    const lat = Number(latRaw);
+    const lng = Number(lngRaw);
+    if (Number.isFinite(lat) && Number.isFinite(lng)) {
+      return reverseGeocodeLatLng(lat, lng, apiKey);
+    }
+  }
+
   const address = request.nextUrl.searchParams.get("address")?.trim();
   if (!address) {
-    return NextResponse.json({ error: "address is required." }, { status: 400 });
+    return NextResponse.json(
+      { error: "Provide address=… or both lat= and lng= for reverse geocode." },
+      { status: 400 }
+    );
   }
 
   if (apiKey) {

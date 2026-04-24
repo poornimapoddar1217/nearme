@@ -56,6 +56,28 @@ function RadiusCircle({
   return null;
 }
 
+function MapViewportController({
+  center,
+  selectedPlace,
+}: {
+  center: UserLocation;
+  selectedPlace: Place | null;
+}) {
+  const map = useMap();
+
+  useEffect(() => {
+    if (!map || !selectedPlace) return;
+    map.panTo({ lat: selectedPlace.lat, lng: selectedPlace.lon });
+  }, [map, selectedPlace]);
+
+  useEffect(() => {
+    if (!map || selectedPlace) return;
+    map.panTo({ lat: center.lat, lng: center.lng });
+  }, [map, center.lat, center.lng, selectedPlace]);
+
+  return null;
+}
+
 export default function NearbyMap({
   center,
   places,
@@ -72,10 +94,26 @@ export default function NearbyMap({
     () => places.find((item) => item.id === selectedPlaceId) ?? null,
     [places, selectedPlaceId]
   );
-  const mapCenter = selectedPlace
-    ? { lat: selectedPlace.lat, lng: selectedPlace.lon }
-    : { lat: center.lat, lng: center.lng };
   const zoom = zoomForRadius(radiusMeters);
+  const markerPositions = useMemo(() => {
+    const counts = new globalThis.Map<string, number>();
+    return places.map((place) => {
+      const key = `${place.lat.toFixed(5)},${place.lon.toFixed(5)}`;
+      const idx = counts.get(key) ?? 0;
+      counts.set(key, idx + 1);
+      if (idx === 0) return { ...place, markerLat: place.lat, markerLng: place.lon };
+
+      // Small radial offset makes overlapping pins individually clickable.
+      const ring = Math.ceil(idx / 6);
+      const angle = (idx % 6) * (Math.PI / 3);
+      const offset = ring * 0.00012;
+      return {
+        ...place,
+        markerLat: place.lat + Math.sin(angle) * offset,
+        markerLng: place.lon + Math.cos(angle) * offset,
+      };
+    });
+  }, [places]);
 
   if (!apiKey) {
     return <div className="map-root">Missing map API key.</div>;
@@ -85,12 +123,13 @@ export default function NearbyMap({
     <APIProvider apiKey={apiKey}>
       <Map
         className="map-root"
-        center={mapCenter}
-        zoom={zoom}
+        defaultCenter={{ lat: center.lat, lng: center.lng }}
+        defaultZoom={zoom}
         mapId={mapId}
         gestureHandling="greedy"
         disableDefaultUI={false}
       >
+        <MapViewportController center={center} selectedPlace={selectedPlace} />
         <RadiusCircle center={center} radiusMeters={radiusMeters} />
 
         {useAdvancedMarkers ? (
@@ -106,14 +145,14 @@ export default function NearbyMap({
           <Marker position={{ lat: center.lat, lng: center.lng }} />
         )}
 
-        {places.map((place) => {
+        {markerPositions.map((place) => {
           const isSelected = selectedPlaceId === place.id;
 
           if (useAdvancedMarkers) {
             return (
               <AdvancedMarker
                 key={place.id}
-                position={{ lat: place.lat, lng: place.lon }}
+                position={{ lat: place.markerLat, lng: place.markerLng }}
                 onClick={() => {
                   onSelectPlace(place.id);
                   setOpenInfoId(place.id);
@@ -132,7 +171,7 @@ export default function NearbyMap({
           return (
             <Marker
               key={place.id}
-              position={{ lat: place.lat, lng: place.lon }}
+              position={{ lat: place.markerLat, lng: place.markerLng }}
               onClick={() => {
                 onSelectPlace(place.id);
                 setOpenInfoId(place.id);

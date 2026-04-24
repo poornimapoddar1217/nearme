@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { haversineDistanceMeters } from "@/lib/distance";
+import { searchWithApifyMaps } from "@/lib/apify-maps";
 import type { Place } from "@/types/place";
 
 type GoogleNearbyResponse = {
@@ -17,6 +18,8 @@ type GoogleNewPlaceResult = {
   };
   formattedAddress?: string;
   rating?: number;
+  googleMapsUri?: string;
+  websiteUri?: string;
   location?: {
     latitude?: number;
     longitude?: number;
@@ -25,6 +28,21 @@ type GoogleNewPlaceResult = {
 
 const GOOGLE_TEXT_NEW_ENDPOINT = "https://places.googleapis.com/v1/places:searchText";
 const NOMINATIM_SEARCH_ENDPOINT = "https://nominatim.openstreetmap.org/search";
+const MAX_SEARCH_TERMS = 6;
+const TARGET_RESULTS = 20;
+const MIN_RELATED_RESULTS = 6;
+const GOOGLE_TIMEOUT_MS = 4500;
+const OSM_TIMEOUT_MS = 2500;
+
+async function parseJsonSafe<T>(response: Response): Promise<T | null> {
+  try {
+    const text = await response.text();
+    if (!text.trim()) return null;
+    return JSON.parse(text) as T;
+  } catch {
+    return null;
+  }
+}
 
 function getSearchTerms(query: string): string[] {
   const raw = query.trim();
@@ -111,6 +129,18 @@ function getSearchTerms(query: string): string[] {
     terms.add("it company");
     terms.add("tech company");
   }
+  if (
+    base.includes("web design") ||
+    base.includes("development agency") ||
+    base.includes("digital agency") ||
+    base.includes("design agency")
+  ) {
+    terms.add("web design company");
+    terms.add("website development company");
+    terms.add("software company");
+    terms.add("it company");
+    terms.add("digital marketing agency");
+  }
   if (base.includes("supermarket") || (base.includes("grocery") && !base.includes("kirana"))) {
     terms.add("supermarket");
     terms.add("grocery store");
@@ -183,6 +213,8 @@ function toPlace(
     lat,
     lon,
     rating: typeof item.rating === "number" ? item.rating : undefined,
+    reviewLink: item.googleMapsUri?.trim() || undefined,
+    socialLink: item.websiteUri?.trim() || undefined,
     distanceMeters: haversineDistanceMeters(userLat, userLng, lat, lon),
   };
 }
@@ -205,14 +237,17 @@ async function searchTextNew(
   lng: number,
   radius: number
 ): Promise<{ places: Place[]; error?: string }> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), GOOGLE_TIMEOUT_MS);
   const response = await fetch(GOOGLE_TEXT_NEW_ENDPOINT, {
     method: "POST",
     cache: "no-store",
+    signal: controller.signal,
     headers: {
       "Content-Type": "application/json",
       "X-Goog-Api-Key": apiKey,
       "X-Goog-FieldMask":
-        "places.id,places.displayName,places.formattedAddress,places.location,places.rating",
+        "places.id,places.displayName,places.formattedAddress,places.location,places.rating,places.googleMapsUri,places.websiteUri",
     },
     body: JSON.stringify({
       textQuery,
@@ -229,13 +264,16 @@ async function searchTextNew(
       rankPreference: "DISTANCE",
       languageCode: "en",
     }),
-  });
+  }).finally(() => clearTimeout(timer));
 
+  const data = await parseJsonSafe<GoogleNearbyResponse>(response);
   if (!response.ok) {
-    return { places: [], error: `HTTP ${response.status}` };
+    const reason = data?.error?.message ?? `HTTP ${response.status}`;
+    return { places: [], error: reason };
   }
-
-  const data = (await response.json()) as GoogleNearbyResponse;
+  if (!data) {
+    return { places: [], error: `Google response was not JSON (HTTP ${response.status})` };
+  }
   if (data.error?.message) {
     return { places: [], error: `${data.error.status ?? "ERROR"}: ${data.error.message}` };
   }
@@ -252,6 +290,7 @@ export async function GET(request: NextRequest) {
 
   const query = request.nextUrl.searchParams.get("query")?.trim();
   const area = request.nextUrl.searchParams.get("area")?.trim() ?? "";
+  const osmOnly = request.nextUrl.searchParams.get("osmOnly") === "1";
   const lat = Number(request.nextUrl.searchParams.get("lat"));
   const lng = Number(request.nextUrl.searchParams.get("lng"));
   const radius = Number(request.nextUrl.searchParams.get("radius") ?? "5000");
@@ -267,11 +306,25 @@ export async function GET(request: NextRequest) {
   }
 
   try {
+    // Apify Google Maps scraper takes priority when configured.
+    if (!osmOnly) {
+      const apifyPlaces = await searchWithApifyMaps(query, lat, lng, area, TARGET_RESULTS);
+      if (apifyPlaces.length > 0) {
+        const deduped = dedupeByCoordinates(apifyPlaces);
+        const withinRadius = deduped.filter((p) => p.distanceMeters <= radius);
+        return NextResponse.json({
+          places: withinRadius.length > 0 ? withinRadius : deduped.slice(0, 20),
+          expanded: withinRadius.length === 0,
+          source: "apify",
+        });
+      }
+    }
+
     const googleErrors: string[] = [];
-    const searchTerms = getSearchTerms(query);
+    const searchTerms = getSearchTerms(query).slice(0, MAX_SEARCH_TERMS);
     const collected = new Map<string, Place>();
 
-    if (apiKey) {
+    if (apiKey && !osmOnly) {
       for (const searchTerm of searchTerms) {
         const textQuery = area ? `${searchTerm} in ${area}` : searchTerm;
         const result = await searchTextNew(apiKey, textQuery, lat, lng, radius);
@@ -279,18 +332,20 @@ export async function GET(request: NextRequest) {
           googleErrors.push(result.error);
         }
         result.places.forEach((item) => collected.set(item.id, item));
+        if (collected.size >= TARGET_RESULTS) break;
       }
     }
 
     let places = dedupeByCoordinates([...collected.values()]);
 
     // Improve completeness: add text-search candidates even if nearby search returned some results.
-    if (apiKey && places.length < 20) {
+    if (apiKey && !osmOnly && places.length < 20) {
       for (const searchTerm of searchTerms) {
         const textQuery = area ? `${searchTerm} in ${area}` : searchTerm;
         const result = await searchTextNew(apiKey, textQuery, lat, lng, Math.max(radius, 15000));
         if (result.error) googleErrors.push(result.error);
         result.places.forEach((item) => collected.set(item.id, item));
+        if (collected.size >= TARGET_RESULTS * 2) break;
       }
 
       places = dedupeByCoordinates([...collected.values()]);
@@ -300,63 +355,78 @@ export async function GET(request: NextRequest) {
 
     // OSM only when Google returned nothing — avoids polluting good Google lists with unrelated POIs.
     if (places.length === 0) {
+      const osmSearchTerms = (osmOnly ? searchTerms.slice(0, 2) : searchTerms.slice(0, 4)).filter(
+        Boolean
+      );
       const viewbox = toNominatimViewbox(lat, lng, radius);
-      const maxOsmKm = Math.min(Math.max(radius / 1000, 15), 45);
+      const maxOsmKm = Math.min(Math.max(radius / 1000, 20), 80);
       const fallbackCollected = new Map<string, Place>(places.map((item) => [item.id, item]));
 
       const runNominatimPass = async (bounded: "0" | "1") => {
-        for (const searchTerm of searchTerms) {
-          const nominatimQuery = area ? `${searchTerm} ${area} India` : `${searchTerm} India`;
-          const params = new URLSearchParams({
-            q: nominatimQuery,
-            format: "json",
-            limit: "50",
-            countrycodes: "in",
-          });
-          if (bounded === "1") {
-            params.set("bounded", "1");
-            params.set("viewbox", viewbox);
+        for (const searchTerm of osmSearchTerms) {
+          const candidateQueries = [
+            area ? `${searchTerm} ${area} India` : `${searchTerm} India`,
+            area ? `company in ${area}` : "company",
+          ];
+
+          for (const nominatimQuery of candidateQueries) {
+            if (fallbackCollected.size >= TARGET_RESULTS * 2) return;
+            const params = new URLSearchParams({
+              q: nominatimQuery,
+              format: "json",
+              limit: "25",
+              countrycodes: "in",
+            });
+            if (bounded === "1") {
+              params.set("bounded", "1");
+              params.set("viewbox", viewbox);
+            }
+
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), OSM_TIMEOUT_MS);
+            const fallback = await fetch(`${NOMINATIM_SEARCH_ENDPOINT}?${params.toString()}`, {
+              headers: {
+                "User-Agent": "near-me-app/1.0",
+              },
+              cache: "no-store",
+              signal: controller.signal,
+            }).finally(() => clearTimeout(timer));
+            if (!fallback.ok) continue;
+
+            const data = (await parseJsonSafe<
+              Array<{
+                place_id?: number;
+                display_name?: string;
+                lat?: string;
+                lon?: string;
+              }>
+            >(fallback)) ?? [];
+
+            data
+              .map((item) => {
+                const itemLat = Number(item.lat);
+                const itemLng = Number(item.lon);
+                if (!Number.isFinite(itemLat) || !Number.isFinite(itemLng)) return null;
+                const [name, ...rest] = (item.display_name ?? "").split(",");
+                return {
+                  id: String(item.place_id ?? `${itemLat}-${itemLng}`),
+                  name: name?.trim() || "Unnamed place",
+                  address: rest.slice(0, 2).join(",").trim() || "Address unavailable",
+                  lat: itemLat,
+                  lon: itemLng,
+                  distanceMeters: haversineDistanceMeters(lat, lng, itemLat, itemLng),
+                } as Place;
+              })
+              .filter((item): item is Place => Boolean(item))
+              .filter((item) => item.distanceMeters <= maxOsmKm * 1000)
+              .forEach((item) => fallbackCollected.set(item.id, item));
           }
-
-          const fallback = await fetch(`${NOMINATIM_SEARCH_ENDPOINT}?${params.toString()}`, {
-            headers: {
-              "User-Agent": "near-me-app/1.0",
-            },
-            cache: "no-store",
-          });
-          if (!fallback.ok) continue;
-
-          const data = (await fallback.json()) as Array<{
-            place_id?: number;
-            display_name?: string;
-            lat?: string;
-            lon?: string;
-          }>;
-
-          data
-            .map((item) => {
-              const itemLat = Number(item.lat);
-              const itemLng = Number(item.lon);
-              if (!Number.isFinite(itemLat) || !Number.isFinite(itemLng)) return null;
-              const [name, ...rest] = (item.display_name ?? "").split(",");
-              return {
-                id: String(item.place_id ?? `${itemLat}-${itemLng}`),
-                name: name?.trim() || "Unnamed place",
-                address: rest.slice(0, 2).join(",").trim() || "Address unavailable",
-                lat: itemLat,
-                lon: itemLng,
-                distanceMeters: haversineDistanceMeters(lat, lng, itemLat, itemLng),
-              } as Place;
-            })
-            .filter((item): item is Place => Boolean(item))
-            .filter((item) => item.distanceMeters <= maxOsmKm * 1000)
-            .forEach((item) => fallbackCollected.set(item.id, item));
         }
       };
 
       await runNominatimPass("1");
       places = dedupeByCoordinates([...fallbackCollected.values()]);
-      if (places.length === 0) {
+      if (places.length === 0 && !osmOnly) {
         await runNominatimPass("0");
         places = dedupeByCoordinates([...fallbackCollected.values()]);
       }
@@ -364,8 +434,72 @@ export async function GET(request: NextRequest) {
       withinRadius = places.filter((item) => item.distanceMeters <= radius);
     }
 
+    // If we got too few nearby rows, enrich with a short OSM pass to improve list completeness.
+    if (withinRadius.length > 0 && withinRadius.length < MIN_RELATED_RESULTS) {
+      const enrichQueries = [
+        area ? `${query} ${area} India` : `${query} India`,
+        area ? `company in ${area}` : "company",
+      ];
+      const enrichCollected = new Map<string, Place>(places.map((item) => [item.id, item]));
+      const viewbox = toNominatimViewbox(lat, lng, Math.max(radius, 12000));
+
+      for (const enrichQuery of enrichQueries) {
+        const params = new URLSearchParams({
+          q: enrichQuery,
+          format: "json",
+          limit: "40",
+          countrycodes: "in",
+          bounded: "1",
+          viewbox,
+        });
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), OSM_TIMEOUT_MS);
+        const response = await fetch(`${NOMINATIM_SEARCH_ENDPOINT}?${params.toString()}`, {
+          headers: {
+            "User-Agent": "near-me-app/1.0",
+          },
+          cache: "no-store",
+          signal: controller.signal,
+        }).finally(() => clearTimeout(timer));
+        if (!response.ok) continue;
+
+        const data = (await parseJsonSafe<
+          Array<{
+            place_id?: number;
+            display_name?: string;
+            lat?: string;
+            lon?: string;
+          }>
+        >(response)) ?? [];
+
+        data
+          .map((item) => {
+            const itemLat = Number(item.lat);
+            const itemLng = Number(item.lon);
+            if (!Number.isFinite(itemLat) || !Number.isFinite(itemLng)) return null;
+            const [name, ...rest] = (item.display_name ?? "").split(",");
+            return {
+              id: String(item.place_id ?? `${itemLat}-${itemLng}`),
+              name: name?.trim() || "Unnamed place",
+              address: rest.slice(0, 2).join(",").trim() || "Address unavailable",
+              lat: itemLat,
+              lon: itemLng,
+              distanceMeters: haversineDistanceMeters(lat, lng, itemLat, itemLng),
+            } as Place;
+          })
+          .filter((item): item is Place => Boolean(item))
+          .filter((item) => item.distanceMeters <= radius)
+          .forEach((item) => enrichCollected.set(item.id, item));
+
+        if (enrichCollected.size >= TARGET_RESULTS) break;
+      }
+
+      places = dedupeByCoordinates([...enrichCollected.values()]);
+      withinRadius = places.filter((item) => item.distanceMeters <= radius);
+    }
+
     // Last Google-only fallback: broad text search without radius bias.
-    if (withinRadius.length === 0 && places.length === 0 && apiKey) {
+    if (withinRadius.length === 0 && places.length === 0 && apiKey && !osmOnly) {
       const broadCollected = new Map<string, Place>();
       for (const searchTerm of searchTerms) {
         const textQuery = area ? `${searchTerm} in ${area}` : searchTerm;
@@ -384,7 +518,7 @@ export async function GET(request: NextRequest) {
       });
     }
 
-    if (withinRadius.length === 0 && places.length === 0 && googleErrors.length > 0) {
+    if (!osmOnly && withinRadius.length === 0 && places.length === 0 && googleErrors.length > 0) {
       const reason = googleErrors[0];
       return NextResponse.json(
         { error: `Google Places returned no usable data (${reason}). Check API key restrictions/billing.` },
@@ -392,10 +526,16 @@ export async function GET(request: NextRequest) {
       );
     }
 
+    if (osmOnly && withinRadius.length === 0 && places.length === 0) {
+      return NextResponse.json({ places: [], expanded: false, source: "osm-only" });
+    }
+
     return NextResponse.json({ places: dedupeByCoordinates(withinRadius), expanded: false });
-  } catch {
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : "Unexpected server error while fetching places.";
     return NextResponse.json(
-      { error: "Unexpected server error while fetching places." },
+      { error: message },
       { status: 500 }
     );
   }

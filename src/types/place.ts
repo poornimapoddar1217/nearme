@@ -6,6 +6,8 @@ export type Place = {
   lon: number;
   distanceMeters: number;
   rating?: number;
+  reviewLink?: string;
+  socialLink?: string;
 };
 
 export type UserLocation = {

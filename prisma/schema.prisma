@@ -1,0 +1,91 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+enum ScrapeJobStatus {
+  queued
+  running
+  succeeded
+  failed
+  cancelled
+}
+
+enum ScrapeJobType {
+  places_nearby
+  social_links
+}
+
+model Place {
+  id            String   @id @default(cuid())
+  source        String
+  sourcePlaceId String
+
+  name    String
+  address String
+  lat     Float
+  lon     Float
+
+  phone   String?
+  website String?
+
+  rating      Float?
+  reviewCount Int?
+
+  googleMapsUri String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([source, sourcePlaceId])
+  @@index([lat, lon])
+  @@index([name])
+}
+
+model ScrapeJob {
+  id          String         @id @default(cuid())
+  type        ScrapeJobType
+  status      ScrapeJobStatus @default(queued)
+
+  payloadJson String
+  resultJson  String?
+
+  attempts    Int    @default(0)
+  maxAttempts Int    @default(5)
+  nextRunAt   DateTime @default(now())
+
+  lockedAt DateTime?
+  lockedBy String?
+
+  lastError String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  events ScrapeJobEvent[]
+
+  @@index([status, nextRunAt])
+  @@index([lockedAt])
+}
+
+model ScrapeJobEvent {
+  id        String   @id @default(cuid())
+  jobId     String
+  type      String
+  payloadJson String?
+  createdAt DateTime @default(now())
+
+  job ScrapeJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@index([jobId, createdAt])
+}
+
+model WorkerHeartbeat {
+  workerId      String   @id
+  lastHeartbeat DateTime
+  metaJson      String?
+}
+

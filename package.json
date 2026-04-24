@@ -8,18 +8,29 @@
     "dev:clean": "node -e \"try{require('fs').rmSync('.next',{recursive:true,force:true})}catch(e){}\" && next dev --webpack",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate dev",
+    "worker": "node scripts/worker.mjs"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@ai-sdk/openai": "^3.0.52",
+    "@prisma/client": "^7.8.0",
     "@vis.gl/react-google-maps": "^1.8.2",
+    "ai": "^6.0.159",
+    "apify-client": "^2.22.3",
     "leaflet": "^1.9.4",
     "next": "^16.2.2",
+    "pino": "^10.3.1",
+    "prisma": "^7.8.0",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
-    "react-leaflet": "^5.0.0"
+    "react-leaflet": "^5.0.0",
+    "@prisma/client": "^7.8.0",
+    "pino": "^9.9.0"
   },
   "devDependencies": {
     "@types/google.maps": "^3.58.1",
@@ -29,6 +40,7 @@
     "@types/react-dom": "^19.2.3",
     "eslint": "^9.39.4",
     "eslint-config-next": "^16.2.2",
-    "typescript": "^6.0.2"
+    "typescript": "^6.0.2",
+    "prisma": "^7.8.0"
   }
 }
